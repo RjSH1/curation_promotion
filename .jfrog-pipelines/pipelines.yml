@@ -1,0 +1,189 @@
+    resources:
+      - name: curationResName
+        type: PropertyBag
+        configuration:
+          resourceList: []
+
+      - name: devRepoBuildInfoName
+        type: BuildInfo
+        configuration:
+          sourceArtifactory: myArtifactory          
+          
+      - name: prodRepoBuildInfoName
+        type: BuildInfo
+        configuration:
+          sourceArtifactory: myArtifactory
+          
+      - name: prodRepoBundle
+        type: ReleaseBundle
+        configuration:
+          sourceDistribution: myDistribution
+          name: releaseName
+          version: 1.0.${run_id}
+
+      - name: siteARuleName
+        type: DistributionRule
+        configuration:
+          sourceDistribution: myDistribution
+          serviceName: "*"
+          siteName: siteAName
+          cityName: "*"
+          countryCodes:
+            - "*"
+      - name: siteBRuleName
+        type: DistributionRule
+        configuration:
+          sourceDistribution: myDistribution
+          serviceName: "*"
+          siteName: siteBName
+          cityName: "*"
+          countryCodes:
+            - "*"
+
+
+    pipelines:
+      - name: curationName
+        configuration:
+          jfrogCliVersion: 2
+          environmentVariables:
+            readOnly:
+              fileList:
+                default: ""
+                allowCustom: true
+                description: comma separated list of full artifactory paths from a remote repository
+        steps:
+          - name: cache_and_copy
+            type: Bash
+            configuration:
+              integrations:
+                - name: myArtifactory
+              outputResources:
+                - name: curationResName
+              environmentVariables:
+                artIntName: myArtifactory
+                devRepoName: devRepoName
+                curationResName: curationResName
+                virtualRepoName: virtualRepoName
+            execution:
+              onExecute:
+                # - if [ -z "$fileList" ]; then echo "Must provide value for 'fileList' variable via custom trigger"; exit 1; fi
+                - art_url="$(eval echo \"\${int_${myArtifactory}_url}\")"
+                - art_apikey="$(eval echo \"\${int_${myArtifactory}_apikey}\")"
+                - art_user="$(eval echo \"\${int_${myArtifactory}_username}\")"
+                - newList=""
+                - |
+                  for item in ${fileList//,/ }; do
+                    echo "processing file $item"
+                    curl -u $art_user:$art_apikey -I $art_url/$item
+                    newPath=${item#"$virtualRepoName"}
+                    newPath="${devRepoName}${newPath}"
+                    echo "copying to local at $newPath"
+                    jf rt copy $item $devRepoName
+                    newList="${newPath},${newList}"
+                  done
+
+              onSuccess:
+                - write_output ${curationResName} "resourceList=${newList}"
+
+      - name: promotionName
+        configuration:
+          jfrogCliVersion: 2
+          environmentVariables:
+            readOnly:
+              #JFROG_CLI_BUILD_NAME: buildName
+              #JFROG_CLI_BUILD_NUMBER: ${run_id}
+              fileList:
+                default: ""
+                allowCustom: true
+                description: comma separated list of full artifactory paths from a local repository
+        steps:
+
+          - name: create_dev_build
+            type: Bash
+            configuration:
+              environmentVariables:
+                devRepoName: devRepoName
+                virtualRepoName: virtualRepoName
+                artIntName: myArtifactory
+                buildInfoName: devRepoBuildInfoName
+              inputResources:
+                - name: curationResName
+                  trigger: false
+              outputResources:
+                - name: devRepoBuildInfoName
+              integrations:
+                - name: myArtifactory
+            execution:
+              onExecute:
+                - promotionList="$fileList"
+                # - if [ -z "$promotionList" ]; then promotionList="${resourceList}"; fi
+                # - if [ -z "$promotionList" ]; then echo "no file list found in env or resource. file list is required for promotion flow"; exit 1; fi
+                - |
+                  AQL1="items.find ({\"\$or\":[{"
+                  AQL2=""
+                  for item in ${promotionList//,/ }; do
+                    echo "processing file $item"
+                    IREPO=$(echo "$item" | cut -d "/" -f1)
+                    IPATH=$(dirname "$item" | cut -d "/" -f 2-)
+                    INAME=$(basename "$item")
+                    AQL2="${AQL2}\"\$and\":[{\"repo\":\"${IREPO}\",\"path\":\"${IPATH}\", \"name\":\"${INAME}\"}],"
+                    jf rt sp $item "build.name=${JFROG_CLI_BUILD_NAME};build.number=${JFROG_CLI_BUILD_NUMBER}"
+                  done
+                - |
+                  AQL2='echo ${AQL2} | rev | cut -c2- | rev'
+                  AQL3='}],"type":"file"}).include("actual_md5", "name")'
+                  AQL="${AQL1}${AQL2}${AQL3}"
+                  RES=jf rt curl -XPOST -H "Content-Type: text/plain" -d "$AQL" api/search/aql --silent | jq '[.results[] | .["md5"] = .actual_md5 | del(.actual_md5)]'
+                  BST='date +"%Y-%m-%dT%H:%M:%S.000%z"'
+                  BUILD_HEADER="{ \"version\":\"1.0.1\", \"name\":\"${JFROG_CLI_BUILD_NAME}\", \"number\":\"${JFROG_CLI_BUILD_NUMBER}\", \"type\":\"GENERIC\", \"started\":\"${BST}\", \"modules\": [{ \"id\":\"rpms\",\"type\":\"generic\", \"artifacts\":"
+                  BUILD_FOOTER="}]}"
+                  BUILDINFO="${BUILD_HEADER}$RES${BUILD_FOOTER}"
+                  echo $BUILDINFO
+                  jf rt curl -H 'Content-Type:application/json' -d "$BUILDINFO"  -XPUT /api/build?project=$project_key
+
+              onSuccess:
+                - write_output ${buildInfoName} "buildName=${JFROG_CLI_BUILD_NAME}" "buildNumber=${JFROG_CLI_BUILD_NUMBER}"
+                  # echo "${buildInfoName}" "${JFROG_CLI_BUILD_NAME}" "${JFROG_CLI_BUILD_NUMBER}"
+
+          - name: promote_build
+            type: PromoteBuild
+            configuration:
+              requiresApproval: false
+              # copy: true
+              #integrations:
+                #- name: myArtifactory  
+              targetRepository: test-prodRepoName
+              inputResources:
+                - name: devRepoBuildInfoName
+              outputResources:
+                - name: prodRepoBuildInfoName
+
+          - name: create_bundle
+            type: CreateReleaseBundle
+            configuration:
+              sign: true
+              releaseBundleName: releaseName
+              releaseBundleVersion: ${run_id}
+              dryRun: false
+              inputResources:
+                - name: prodRepoBuildInfoName
+              outputResources:
+                - name: prodRepoBundle
+
+          - name: distribute_site_a
+            type: DistributeReleaseBundle
+            configuration:
+              dryRun: false
+              inputResources:
+                - name: siteARuleName
+                - name: prodRepoBundle
+                  trigger: false
+
+          - name: distribute_site_b
+            type: DistributeReleaseBundle
+            configuration:
+              dryRun: false
+              inputResources:
+                - name: siteBRuleName
+                - name: prodRepoBundle
+                  trigger: false
