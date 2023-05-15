@@ -1,0 +1,75 @@
+# note: this yaml is specifically designed for use with the non-scm pipelineSource feature.
+# it will not be considered valid yaml if you add it as a pipelineSource in the pipelines UI.
+configs:
+  pipelineSourceName: &pipelineSourceName 'rpm_flow_again_test'
+  # this is the project ID for the creating a source in the "all" context. to use other projects,
+  # call the pipelines GET /projects api and from those results, you can find the project that
+  # you want to use to add a new pipeline. Get the ID from that project and add use it here.
+  projectId: &projectId '1'
+projectId: *projectId
+name: *pipelineSourceName
+pipelinesYmlPropertyBag:
+    # integrations must be created from the pipelines UI BEFORE adding this pipeline
+    integrationDetails:
+      # Artifactory
+      artifactoryIntegrationName: &artIntName 'art'
+      # Distribution
+      distributionIntegrationName: &distIntName 'int_distribution'
+
+    # Artifactory repositories should also be created in the Artifactory UI before executing this pipeline
+    artifactoryRepositories:
+      # the virtual repo the encompasses one or more remote RPM repositories.
+      # this is the repository from which the curation flow will start
+      virtualRepoName: &virtualRepoName 'pip-rpm-virtual'
+      # this local repository is where curated artifacts from the virtual will be copied
+      devRepoName: &devRepoName 'pip-rpm-dev-local'
+      # the "production" repository to hold packages promoted from the dev repo
+      prodRPMRepoName: &prodRepoName 'pip-rpm-prod-local'
+
+    pipelinesDetails:
+      # a name for the pipeline. Must be unique in the system
+      curationName: &curationName 'rpm_curate'
+      promotionName: &promotionName 'rpm_promote_and_publish'
+
+    # resources must have unique names across the system, since they can be shared by
+    # different pipelines
+    resourceDetails:
+      # this is for a "PropertyBag" resource.
+      # at the end of the "curation" workflow, the list of copied files will be written
+      # to this resource.  The "promote and distribute" workflow can then use this resource directly
+      # as input.  It will contain a parameter called "resourceList" which will be a comma separated list
+      # of file paths.
+      ### example contents
+      # {"resourceList": "pipe-rpm-virtual/a.rpm,pip-rpm-virtual/b.rpm"}
+      curationResourceName: &curationResName 'curated_list'
+
+      # the name of the BuildInfo resource to hold build information from the dev repository
+      devRepoBuildInfoName: &devRepoBuildInfoName 'dev_repo_buildinfo'
+
+      # the name of the BuildInfo resource to hold information after the dev build is promoted to production
+      prodRepoBuildInfoName: &prodRepoBuildInfoName 'prod_repo_buildinfo'
+
+      # the name of the ReleaseBundle resource that is created to contain the artifacts from file_list
+      prodRepoBundleName: &prodRepoBundle 'prod_repo_bundle'
+
+      # These resources contain the rules for Distribution. In this example
+      # Distribution is split between 2 sites, so each site has its own "DistributionRule" resource
+      # see https://www.jfrog.com/confluence/display/JFROG/DistributionRule
+      primarySiteDistRuleName: &siteARuleName 'site_A_rule'
+      secondarySiteDistRuleName: &siteBRuleName 'site_B_rule'
+
+
+    promotion:
+      # the friendly name of the build getting published to Artifactory
+      buildName: &buildName 'rpm_build'
+
+
+    releaseBundle:
+      # The name of your release. This will appear in the Distribution UI
+      releaseName: &releaseName 'pip_rpm_prod_bundle'
+
+
+    distribution:
+      primarySiteName: &siteAName 'siteA'
+
+      secondarySiteName: &siteBName 'siteB'
